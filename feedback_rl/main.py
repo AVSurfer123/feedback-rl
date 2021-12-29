@@ -55,7 +55,7 @@ def collect_data(args):
     while steps < args.num_steps:
         done = False
         data.append([obs])
-        print("Initial state of run:", obs)
+        # print("Initial state of run:", obs)
         spline_duration = args.prediction_horizon * sim_dt # [s] Length that spline is valid for
         traj_des = SplinePath(args.num_knots + 1, spline_duration, sim_dt)
         spline_params = traj_des.random_spline(spline_duration / args.num_knots * 2)[1:]
@@ -73,12 +73,12 @@ def collect_data(args):
         traj_act = np.array(data[run])
         data[run] = (traj_act, spline_params)
 
-        traj_des.plot(derivs=False)
-        plt.plot(traj_des.times_eval, traj_act[:, 0], label='x actual')
-        plt.plot()
-        plt.legend()
-        plt.savefig('small_horizon.png')
-        plt.show()
+        # traj_des.plot(derivs=False)
+        # plt.plot(traj_des.times_eval, traj_act[:, 0], label='x actual')
+        # plt.plot()
+        # plt.legend()
+        # plt.savefig('small_horizon.png')
+        # plt.show()
 
         run += 1
 
@@ -126,6 +126,7 @@ def main(args):
     plt.plot(losses, 'o-', label="Training Loss")
     plt.xlabel("Iteration")
     plt.ylabel("Loss")
+    plt.legend()
     plt.savefig('training_loss.png')
     plt.show()
 
