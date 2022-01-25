@@ -23,7 +23,7 @@ g = 9.81 # [m/s^2]
 sim_dt = 0.01 # [s] time between each step of the environment
 pole_inertia_coefficient = 1
 
-def feedback_controller(env, idx, traj):
+def feedback_controller(env, idx, traj, xi_initial):
     v = 0
     M = env.params.cart.mass
     m = env.params.pole.mass
@@ -34,11 +34,11 @@ def feedback_controller(env, idx, traj):
 
     x_des = traj.x_des[idx]
     x_dot_des = traj.dt_x_des[idx]
-    xi_des = np.array([x_des, x_dot_des])
+    xi_des = np.array([x_des, x_dot_des]) + xi_initial # Adding xi_initial since we assume spline value is an offset from starting position
     v_ff = traj.ddt_x_des[idx]
 
     # Choose closed-loop eigenvalues to be -3, -3, using standard CCF dynamics
-    K = np.array([-9, -6])
+    K = np.array([-900, -60])
     v = v_ff + K @ (xi - xi_des)
 
     u_star = -m*l*np.sin(theta) * theta_dot**2  - m*g*np.sin(theta)*np.cos(theta) / (1 + pole_inertia_coefficient)
@@ -61,7 +61,7 @@ def collect_data(args):
         spline_params = traj_des.random_spline(spline_duration / args.num_knots * 2)[1:]
         n_iterations = int(traj_des.T / sim_dt)
         for i in range(n_iterations):
-            action = feedback_controller(env, i, traj_des)
+            action = feedback_controller(env, i, traj_des, np.array([0, 0]))
             obs, rew, done, info = env.step(action)
             steps += 1
             data[run].append(obs)
@@ -72,6 +72,7 @@ def collect_data(args):
             continue
         traj_act = np.array(data[run])
         data[run] = (traj_act, spline_params)
+        run += 1
 
         # traj_des.plot(derivs=False)
         # plt.plot(traj_des.times_eval, traj_act[:, 0], label='x actual')
@@ -80,21 +81,21 @@ def collect_data(args):
         # plt.savefig('small_horizon.png')
         # plt.show()
 
-        run += 1
-
     return data
 
 
-def train(args, loader):
+def train(args, train_loader, eval_loader):
     eta_dynamics = MLP(5 + args.num_knots, 3 * args.prediction_horizon // args.eta_skip, [32, 32]).cuda()
     print(eta_dynamics)
     optimizer = optim.Adam(eta_dynamics.parameters(), lr=args.learning_rate)
 
-    losses = []
+    train_losses = []
+    eval_losses = [eval_loss(eta_dynamics, eval_loader)]
     
-    for i in range(args.num_epochs):
+    for i in range(1, args.num_epochs + 1):
         total_loss = 0
-        for traj, params in loader:
+        count = 0
+        for traj, params in train_loader:
             net_input = torch.cat((traj[:, 0], params), axis=1).float().cuda()
             target = traj[:, 1:, 2:].cuda()
             target = target.reshape(target.shape[0], -1)
@@ -103,13 +104,37 @@ def train(args, loader):
             output = eta_dynamics(net_input)
             loss = F.mse_loss(output, target)
             total_loss = total_loss + loss
+            count += 1
+
             loss.backward()
             optimizer.step()
 
-        print(f"Loss at iteration {i}: {total_loss}")
-        losses.append(total_loss)
+        epoch_loss = total_loss / count
+        print(f"Training loss at iteration {i}: {epoch_loss}")
+        train_losses.append(epoch_loss)
+
+        if i % args.eval_period == 0:
+            loss = eval_loss(eta_dynamics, eval_loader)
+            print(f"Eval loss at iteration{i}: {loss}")
+            eval_losses.append(loss)
     
-    return eta_dynamics, losses
+    return eta_dynamics, train_losses, eval_losses
+
+def eval_loss(model, eval_loader):
+    model.eval()
+    total_loss = 0
+    count = 0
+    for traj, params in eval_loader:
+        net_input = torch.cat((traj[:, 0], params), axis=1).float().cuda()
+        target = traj[:, 1:, 2:].cuda()
+        target = target.reshape(target.shape[0], -1)
+
+        output = model(net_input)
+        loss = F.mse_loss(output, target)
+        total_loss = total_loss + loss
+        count += 1
+    model.train()
+    return total_loss / count
 
 def main(args):
     start=  time.time()
@@ -117,17 +142,27 @@ def main(args):
     print(f"Took {time.time() - start} seconds to collect data")
     print("Data length:", len(data))
     # [print(d[0].shape, end=' ') for d in data]
-    dataset = EtaData(data, skip=args.eta_skip)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    end_idx = int(len(data) * args.validation_split / 100)
+    train_dataset = EtaData(data[:end_idx], skip=args.eta_skip)
+    eval_dataset = EtaData(data[end_idx:], skip=args.eta_skip)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    eval_loader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=True)
     start = time.time()
-    model, losses = train(args, loader)
+    model, train_losses, eval_losses = train(args, train_loader, eval_loader)
     print(f"Took {time.time() - start} seconds to train model for {args.num_epochs} epochs")
 
-    plt.plot(losses, 'o-', label="Training Loss")
+    plt.plot(train_losses, 'o-', label="Training Loss")
     plt.xlabel("Iteration")
     plt.ylabel("Loss")
     plt.legend()
     plt.savefig('training_loss.png')
+    plt.show()
+
+    plt.plot(eval_losses, 'o-', label="Validation Loss")
+    plt.xlabel("Iteration")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig('test_loss.png')
     plt.show()
 
 
@@ -141,8 +176,9 @@ def test_controller():
     traj_des.build_splines(knots)
     data = [obs]
     n_iterations = int(traj_des.T / sim_dt)
+    xi_initial = np.array([env.state.x_pos, env.state.x_dot])
     for i in range(n_iterations):
-        action = feedback_controller(env, i, traj_des)
+        action = feedback_controller(env, i, traj_des, xi_initial)
         print("Action:", action)
         obs, rew, done, info = env.step(action)
         data.append(obs)
@@ -151,10 +187,11 @@ def test_controller():
         if done:
             break
     data = np.array(data)
-    traj_des.plot()
-    plt.plot(traj_des.times_eval, data[:, 0], label='x actual')
+    traj_des.plot(derivs=True)
+    plt.plot(traj_des.times_eval, data[:, 0] - xi_initial[0], label='x actual')
+    plt.plot(traj_des.times_eval, data[:, 1] - xi_initial[1], label='x dot actual')
     plt.legend()
-    # plt.savefig('tracking_control_test.png')
+    plt.savefig('tracking_sine_offset.png')
     plt.show()
 
 
@@ -186,6 +223,9 @@ if __name__ == '__main__':
     parser.add_argument('-e', '--num-epochs', type=int, default=100, help="Number of epochs during training")
     parser.add_argument('-b', '--batch-size', type=int, default=64, help="Batch size for training the model")
     parser.add_argument('-lr', '--learning-rate', type=float, default=.001, help="Learning rate for gradient descent")
+    parser.add_argument('-ep', '--eval-period', type=int, default=20, help="How many epochs to wait between each eval")
+    parser.add_argument('-vp', '--validation-split', type=float, default=20, help="What percentage of collected data to use for eval")
+    parser.add_argument('-t', '--test-size', type=int, default=1000, help="How many environments to test on")
     parser.add_argument('-s', '--num-steps', type=int, default=10_000, help="Number of environment steps used to train the Eta model")
     parser.add_argument('-ph', '--prediction-horizon', type=int, default=20, help="Number of timesteps the Eta model should predict into the future")
     parser.add_argument('-es', '--eta-skip', type=int, default=1, help="Number of environment steps between each Eta prediction")
