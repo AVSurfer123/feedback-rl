@@ -1,6 +1,7 @@
 """Trains RL through feedback linearization."""
 
 import argparse
+from ast import Constant
 import sys
 import os
 import time
@@ -16,14 +17,14 @@ import gym
 import gym_cartpole_swingup
 
 from feedback_rl.models import MLP, EtaData
-from feedback_rl.spline_planner import SplinePath
+from feedback_rl.splines import BSpline, ConstAccelSpline
 
 FPS = 60
 g = 9.81 # [m/s^2]
 sim_dt = 0.01 # [s] time between each step of the environment
 pole_inertia_coefficient = 1
 
-def feedback_controller(env, idx, traj, xi_initial):
+def feedback_controller(env, t, traj, xi_initial):
     v = 0
     M = env.params.cart.mass
     m = env.params.pole.mass
@@ -32,10 +33,10 @@ def feedback_controller(env, idx, traj, xi_initial):
     theta_dot = env.state.theta_dot
     xi = np.array([env.state.x_pos, env.state.x_dot])
 
-    x_des = traj.x_des[idx]
-    x_dot_des = traj.dt_x_des[idx]
+    x_des = traj.deriv(t, 0)
+    x_dot_des = traj.deriv(t, 1)
     xi_des = np.array([x_des, x_dot_des]) + xi_initial # Adding xi_initial since we assume spline value is an offset from starting position
-    v_ff = traj.ddt_x_des[idx]
+    v_ff = traj.deriv(t, 2)
 
     # Choose closed-loop eigenvalues to be -3, -3, using standard CCF dynamics
     K = np.array([-900, -60])
@@ -57,11 +58,13 @@ def collect_data(args):
         data.append([obs])
         # print("Initial state of run:", obs)
         spline_duration = args.prediction_horizon * sim_dt # [s] Length that spline is valid for
-        traj_des = SplinePath(args.num_knots + 1, spline_duration, sim_dt)
+        traj_des = ConstAccelSpline(args.num_knots)
+        num_knots = int()
         spline_params = traj_des.random_spline(spline_duration / args.num_knots * 2)[1:]
         n_iterations = int(traj_des.T / sim_dt)
+        xi_initial = np.array([env.state.x_pos, env.state.x_dot])
         for i in range(n_iterations):
-            action = feedback_controller(env, i, traj_des, np.array([0, 0]))
+            action = feedback_controller(env, i, traj_des, xi_initial)
             obs, rew, done, info = env.step(action)
             steps += 1
             data[run].append(obs)
@@ -84,8 +87,8 @@ def collect_data(args):
     return data
 
 
-def train(args, train_loader, eval_loader):
-    eta_dynamics = MLP(5 + args.num_knots, 3 * args.prediction_horizon // args.eta_skip, [32, 32]).cuda()
+def train(args, num_params, train_loader, eval_loader):
+    eta_dynamics = MLP(5 + num_params, 3 * args.prediction_horizon // args.eta_skip, [32, 32]).cuda()
     print(eta_dynamics)
     optimizer = optim.Adam(eta_dynamics.parameters(), lr=args.learning_rate)
 
@@ -136,6 +139,33 @@ def eval_loss(model, eval_loader):
     model.train()
     return total_loss / count
 
+def test_loss(model):
+    env = gym.make("CartPoleSwingUp-v0")
+    obs = env.reset()
+    steps = 0
+    run = 0
+    done = False
+    losses = []
+
+    for i in range(args.test_size):
+        # print("Initial state of run:", obs)
+        spline_duration = args.prediction_horizon * sim_dt # [s] Length that spline is valid for
+        traj_des = BSpline(args.num_knots + 1, spline_duration, sim_dt)
+        spline_params = traj_des.random_spline(spline_duration / args.num_knots * 2)[1:]
+        xi_initial = np.array([env.state.x_pos, env.state.x_dot])
+        while not done:
+            action = feedback_controller(env, i, traj_des, xi_initial)
+            obs, rew, done, info = env.step(action)
+            steps += 1
+            
+        obs = env.reset()
+        if done:
+            continue
+        traj_act = np.array(data[run])
+        data[run] = (traj_act, spline_params)
+        run += 1
+
+
 def main(args):
     start=  time.time()
     data = collect_data(args)
@@ -162,7 +192,7 @@ def main(args):
     plt.xlabel("Iteration")
     plt.ylabel("Loss")
     plt.legend()
-    plt.savefig('test_loss.png')
+    plt.savefig('eval_loss.png')
     plt.show()
 
 
@@ -170,26 +200,32 @@ def test_controller():
     env = gym.make("CartPoleSwingUp-v0")
     obs = env.reset()
     num_knots = 10
-    traj_des = SplinePath(num_knots + 1, 5, sim_dt)
-    knots = np.sin(np.arange(num_knots + 1))
-    print(knots)
-    traj_des.build_splines(knots)
+    traj_des = ConstAccelSpline(num_knots)
+    times = np.arange(1, num_knots + 1)
+    knots = np.sin(times)
+    traj_des.build_spline(times, knots)
     data = [obs]
-    n_iterations = int(traj_des.T / sim_dt)
     xi_initial = np.array([env.state.x_pos, env.state.x_dot])
-    for i in range(n_iterations):
-        action = feedback_controller(env, i, traj_des, xi_initial)
+    t = 0
+    while t <= traj_des.T:
+        action = feedback_controller(env, t, traj_des, xi_initial)
         print("Action:", action)
         obs, rew, done, info = env.step(action)
         data.append(obs)
         env.render()
         time.sleep(1/FPS)
+        t += sim_dt
         if done:
             break
     data = np.array(data)
-    traj_des.plot(derivs=True)
-    plt.plot(traj_des.times_eval, data[:, 0] - xi_initial[0], label='x actual')
-    plt.plot(traj_des.times_eval, data[:, 1] - xi_initial[1], label='x dot actual')
+    
+    ax = plt.gca()
+    traj_des.plot(ax, order=0)
+    traj_des.plot(ax, order=1)
+    traj_des.plot(ax, order=2)
+    eval_times = np.arange(0, t + sim_dt, sim_dt)
+    plt.plot(eval_times, data[:, 0] - xi_initial[0], label='x actual')
+    plt.plot(eval_times, data[:, 1] - xi_initial[1], label='x dot actual')
     plt.legend()
     plt.savefig('tracking_sine_offset.png')
     plt.show()
