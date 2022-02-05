@@ -13,14 +13,14 @@ class EtaData(Dataset):
 
         # Initialize traj array with all horizon-length rollouts from our data
         self.traj = []
-        for run, params in data:
+        for run, params, xi_init in data:
             # T = len(run)
             # for t in range(T):
                 # end = t + horizon
                 # if end >= T:
                 #     break
                 # assert len(run[t:end+1:skip]) == horizon // skip + 1, "Error in logic"
-            self.traj.append((run[::skip], params))
+            self.traj.append((run[::skip], params, xi_init))
 
     def __getitem__(self, idx):
         return self.traj[idx]

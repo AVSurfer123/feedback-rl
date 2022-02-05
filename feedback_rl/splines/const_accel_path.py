@@ -4,6 +4,8 @@ from feedback_rl.splines.spline import Spline
 
 class ConstAccelSpline(Spline):
 
+    num_segment_params = 1
+
     def __init__(self, num_knots, init_vel=0):
         super().__init__(num_knots)
         self._params = [] # Contains constant acceleration between each knot point
@@ -12,12 +14,12 @@ class ConstAccelSpline(Spline):
 
     def build_spline(self, times, points):
         super().build_spline(times, points)
-        prev_x = 0
-        prev_t = 0
+        prev_x = points[0]
+        prev_t = times[0]
         init_vel = self.init_vel
         self._params = []
-        self.knot_vels = []
-        for t, x in zip(times, points):
+        self.knot_vels = [init_vel]
+        for t, x in zip(times[1:], points[1:]):
             delta = t - prev_t
             # Inverting x(t) = x(0) + v(0)*t + .5*a*t^2
             a = (x - prev_x - init_vel * delta) * 2 / delta / delta
@@ -25,18 +27,18 @@ class ConstAccelSpline(Spline):
             init_vel += a * delta
             self.knot_vels.append(init_vel)
             prev_t = t
-            prev_x = x 
+            prev_x = x
+        self._params = np.array(self._params) 
 
     def random_spline(self, times, limit):
         super().random_spline(times, limit)
-
-        self._params = np.random.uniform(low=-limit, high=limit, size=self.num_knots)
+        self._params = np.random.uniform(low=-limit, high=limit, size=self.num_knots - 1)
         prev_x = 0
-        prev_t = 0
+        prev_t = times[0]
         init_vel = self.init_vel
-        self._x = []
-        self.knot_vels = []
-        for t, a in zip(times, self._params):
+        self._x = [prev_x]
+        self.knot_vels = [init_vel]
+        for t, a in zip(times[1:], self._params):
             delta = t - prev_t
             x = prev_x + init_vel * delta + .5 * a * delta * delta
             self._x.append(x)
@@ -84,15 +86,15 @@ class ConstAccelSpline(Spline):
         #     else:
         #         start = (start + end) // 2
         # return start
-        for i, knot_time in enumerate(self._t):
+        for i, knot_time in enumerate(self._t[1:]):
             if t < knot_time:
                 return i
-        return self.num_knots - 1
+        return self.num_knots - 2
 
 
 if __name__ == '__main__':
-    num_knots = 10
-    times = np.arange(1, num_knots + 1)
+    num_knots = 11
+    times = np.arange(0, num_knots)
     data = times * np.sin(times)
     s = ConstAccelSpline(num_knots)
     s.build_spline(times, data)

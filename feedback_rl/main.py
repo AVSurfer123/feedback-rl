@@ -1,9 +1,6 @@
 """Trains RL through feedback linearization."""
 
 import argparse
-from ast import Constant
-import sys
-import os
 import time
 
 import torch
@@ -17,12 +14,15 @@ import gym
 import gym_cartpole_swingup
 
 from feedback_rl.models import MLP, EtaData
-from feedback_rl.splines import BSpline, ConstAccelSpline
+from feedback_rl.splines import SPLINE_MAP
+
+DEBUG = False
 
 FPS = 60
 g = 9.81 # [m/s^2]
-sim_dt = 0.01 # [s] time between each step of the environment
+sim_dt = 0.01 # [s] time between each step of the environment, defined in gym_cartpole_swingup/envs/cartpole_swingup.py
 pole_inertia_coefficient = 1
+max_steps = 500 # Defined in gym_cartpole_swingup/__init__.py
 
 def feedback_controller(env, t, traj, xi_initial):
     v = 0
@@ -55,59 +55,81 @@ def collect_data(args):
 
     while steps < args.num_steps:
         done = False
-        data.append([obs])
-        # print("Initial state of run:", obs)
-        spline_duration = args.prediction_horizon * sim_dt # [s] Length that spline is valid for
-        traj_des = ConstAccelSpline(args.num_knots)
-        num_knots = int()
-        spline_params = traj_des.random_spline(spline_duration / args.num_knots * 2)[1:]
-        n_iterations = int(traj_des.T / sim_dt)
+        data.append([[obs]])
+        spline_num = 0
+        # spline_duration = args.prediction_horizon * sim_dt # [s] Length of spline segment
+        num_knots = max_steps // args.prediction_horizon + 1
+        traj_des = SPLINE_MAP[args.spline_type](num_knots)
+        times = np.arange(0, max_steps + 1, args.prediction_horizon) * sim_dt
+        spline_knots = traj_des.random_spline(times, args.random_size)
         xi_initial = np.array([env.state.x_pos, env.state.x_dot])
-        for i in range(n_iterations):
-            action = feedback_controller(env, i, traj_des, xi_initial)
+        for i in range(max_steps):
+            action = feedback_controller(env, i * sim_dt, traj_des, xi_initial)
             obs, rew, done, info = env.step(action)
             steps += 1
-            data[run].append(obs)
+            data[run][spline_num].append(obs)
             if done:
                 break
+            if (i + 1) % args.prediction_horizon == 0:
+                data[run].append([obs])
+                spline_num += 1
         obs = env.reset()
-        if done:
-            continue
-        traj_act = np.array(data[run])
-        data[run] = (traj_act, spline_params)
+        if (i + 1) % args.prediction_horizon != 0:
+            del data[run][spline_num]
+            spline_num -= 1
+            if len(data[run]) == 0:
+                del data[run]
+                continue
+
+        for num in range(spline_num + 1):
+            traj_act = np.array(data[run][num])
+            data[run][num] = (traj_act, np.array([traj_des.params[num]]), xi_initial)
+            eval_times = np.arange(args.prediction_horizon * num, args.prediction_horizon * (num + 1) + 1) * sim_dt
+            if DEBUG:
+                plt.plot(eval_times, traj_act[:, 0] - xi_initial[0], label='x actual')
+        
         run += 1
 
-        # traj_des.plot(derivs=False)
-        # plt.plot(traj_des.times_eval, traj_act[:, 0], label='x actual')
-        # plt.plot()
-        # plt.legend()
-        # plt.savefig('small_horizon.png')
-        # plt.show()
+        if DEBUG:
+            traj_des.plot(ax=plt.gca(), end_time=None)
+            plt.legend()
+            plt.savefig('small_horizon.png')
+            plt.show()
 
     return data
 
+def get_packaged_input(traj, params, xi_initial):
+    if traj.dim() == 2:
+        traj = traj.unsqueeze(0)
+    if params.dim() == 1:
+        params = params.unsqueeze(0)
+    if xi_initial.dim() == 1:
+        xi_initial = xi_initial.unsqueeze(0)
+    traj[:, :, :2] -= xi_initial.view(traj.shape[0], 1, -1)
+    net_input = torch.cat((traj[:, 0], params), axis=1).float().cuda()
+    return net_input
 
-def train(args, num_params, train_loader, eval_loader):
-    eta_dynamics = MLP(5 + num_params, 3 * args.prediction_horizon // args.eta_skip, [32, 32]).cuda()
+def train_model(args, train_loader, eval_loader):
+    eta_dynamics = MLP(5 + SPLINE_MAP[args.spline_type].num_segment_params, 3 * args.prediction_horizon // args.eta_skip, [32, 32]).cuda()
     print(eta_dynamics)
     optimizer = optim.Adam(eta_dynamics.parameters(), lr=args.learning_rate)
 
     train_losses = []
-    eval_losses = [eval_loss(eta_dynamics, eval_loader)]
+    eval_losses = []
     
     for i in range(1, args.num_epochs + 1):
         total_loss = 0
         count = 0
-        for traj, params in train_loader:
-            net_input = torch.cat((traj[:, 0], params), axis=1).float().cuda()
+        for traj, params, xi_initial in train_loader:
+            net_input = get_packaged_input(traj, params, xi_initial)
             target = traj[:, 1:, 2:].cuda()
             target = target.reshape(target.shape[0], -1)
 
             optimizer.zero_grad()
             output = eta_dynamics(net_input)
-            loss = F.mse_loss(output, target)
+            loss = F.mse_loss(output, target, reduction='sum')
             total_loss = total_loss + loss
-            count += 1
+            count += traj.shape[0]
 
             loss.backward()
             optimizer.step()
@@ -118,7 +140,7 @@ def train(args, num_params, train_loader, eval_loader):
 
         if i % args.eval_period == 0:
             loss = eval_loss(eta_dynamics, eval_loader)
-            print(f"Eval loss at iteration{i}: {loss}")
+            print(f"Eval loss at iteration {i}: {loss}")
             eval_losses.append(loss)
     
     return eta_dynamics, train_losses, eval_losses
@@ -127,58 +149,76 @@ def eval_loss(model, eval_loader):
     model.eval()
     total_loss = 0
     count = 0
-    for traj, params in eval_loader:
-        net_input = torch.cat((traj[:, 0], params), axis=1).float().cuda()
+    for traj, params, xi_initial in eval_loader:
+        net_input = get_packaged_input(traj, params, xi_initial)
         target = traj[:, 1:, 2:].cuda()
         target = target.reshape(target.shape[0], -1)
 
         output = model(net_input)
-        loss = F.mse_loss(output, target)
+        loss = F.mse_loss(output, target, reduction='sum')
         total_loss = total_loss + loss
-        count += 1
+        count += traj.shape[0]
     model.train()
     return total_loss / count
 
-def test_loss(model):
+def test_model(args, eta_model):
     env = gym.make("CartPoleSwingUp-v0")
-    obs = env.reset()
-    steps = 0
-    run = 0
     done = False
     losses = []
 
     for i in range(args.test_size):
-        # print("Initial state of run:", obs)
-        spline_duration = args.prediction_horizon * sim_dt # [s] Length that spline is valid for
-        traj_des = BSpline(args.num_knots + 1, spline_duration, sim_dt)
-        spline_params = traj_des.random_spline(spline_duration / args.num_knots * 2)[1:]
-        xi_initial = np.array([env.state.x_pos, env.state.x_dot])
-        while not done:
-            action = feedback_controller(env, i, traj_des, xi_initial)
-            obs, rew, done, info = env.step(action)
-            steps += 1
-            
         obs = env.reset()
-        if done:
-            continue
-        traj_act = np.array(data[run])
-        data[run] = (traj_act, spline_params)
-        run += 1
+        old_obs = obs
+        done = False
+        num_knots = max_steps // args.prediction_horizon + 1
+        traj_des = SPLINE_MAP[args.spline_type](num_knots)
+        times = np.arange(0, max_steps + 1, args.prediction_horizon) * sim_dt
+        spline_knots = traj_des.random_spline(times, args.random_size)
+        xi_initial = np.array([env.state.x_pos, env.state.x_dot])
+        eta_traj = []
+        for j in range(max_steps):
+
+            action = feedback_controller(env, j * sim_dt, traj_des, xi_initial)
+            obs, rew, done, info = env.step(action)
+
+            eta_traj.append(obs[2:])
+
+            if j % args.prediction_horizon == 0:
+                if j != 0:
+                    eta_loss = F.mse_loss(torch.tensor(eta_traj), target.cpu())
+                    losses.append(eta_loss)
+                eta_traj = []
+                net_input = get_packaged_input(torch.tensor([old_obs]), torch.tensor([traj_des.params[j // args.prediction_horizon]]), torch.tensor(xi_initial))
+                target = eta_model(net_input).reshape(args.prediction_horizon, -1)
+            
+            old_obs = obs
+            if done:
+                break
+        
+    print(len(losses))
+    return losses
 
 
 def main(args):
     start=  time.time()
     data = collect_data(args)
     print(f"Took {time.time() - start} seconds to collect data")
+    
+    condensed = []
+    for run in range(len(data)):
+        for spline_num in range(len(data[run])):
+            condensed.append(data[run][spline_num])
+
     print("Data length:", len(data))
-    # [print(d[0].shape, end=' ') for d in data]
-    end_idx = int(len(data) * args.validation_split / 100)
-    train_dataset = EtaData(data[:end_idx], skip=args.eta_skip)
-    eval_dataset = EtaData(data[end_idx:], skip=args.eta_skip)
+    print("Condensed length:", len(condensed))
+
+    end_idx = int(len(condensed) * args.validation_split / 100)
+    train_dataset = EtaData(condensed[end_idx:], skip=args.eta_skip)
+    eval_dataset = EtaData(condensed[:end_idx], skip=args.eta_skip)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     eval_loader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=True)
     start = time.time()
-    model, train_losses, eval_losses = train(args, train_loader, eval_loader)
+    model, train_losses, eval_losses = train_model(args, train_loader, eval_loader)
     print(f"Took {time.time() - start} seconds to train model for {args.num_epochs} epochs")
 
     plt.plot(train_losses, 'o-', label="Training Loss")
@@ -195,26 +235,27 @@ def main(args):
     plt.savefig('eval_loss.png')
     plt.show()
 
+    test_losses = test_model(args, model)
+    print(f"Average test loss from {args.test_size} episodes: {sum(test_losses) / len(test_losses)}")
+
 
 def test_controller():
     env = gym.make("CartPoleSwingUp-v0")
     obs = env.reset()
-    num_knots = 10
-    traj_des = ConstAccelSpline(num_knots)
-    times = np.arange(1, num_knots + 1)
+    num_knots = 11
+    traj_des = SPLINE_MAP[args.spline_type](num_knots)
+    times = np.linspace(0, max_steps, num_knots) * sim_dt
     knots = np.sin(times)
     traj_des.build_spline(times, knots)
     data = [obs]
     xi_initial = np.array([env.state.x_pos, env.state.x_dot])
-    t = 0
-    while t <= traj_des.T:
-        action = feedback_controller(env, t, traj_des, xi_initial)
-        print("Action:", action)
+    for i in range(max_steps):
+        action = feedback_controller(env, i * sim_dt, traj_des, xi_initial)
+        # print("Action:", action)
         obs, rew, done, info = env.step(action)
         data.append(obs)
         env.render()
         time.sleep(1/FPS)
-        t += sim_dt
         if done:
             break
     data = np.array(data)
@@ -223,7 +264,7 @@ def test_controller():
     traj_des.plot(ax, order=0)
     traj_des.plot(ax, order=1)
     traj_des.plot(ax, order=2)
-    eval_times = np.arange(0, t + sim_dt, sim_dt)
+    eval_times = np.arange(0, max_steps + 1) * sim_dt
     plt.plot(eval_times, data[:, 0] - xi_initial[0], label='x actual')
     plt.plot(eval_times, data[:, 1] - xi_initial[1], label='x dot actual')
     plt.legend()
@@ -261,11 +302,13 @@ if __name__ == '__main__':
     parser.add_argument('-lr', '--learning-rate', type=float, default=.001, help="Learning rate for gradient descent")
     parser.add_argument('-ep', '--eval-period', type=int, default=20, help="How many epochs to wait between each eval")
     parser.add_argument('-vp', '--validation-split', type=float, default=20, help="What percentage of collected data to use for eval")
-    parser.add_argument('-t', '--test-size', type=int, default=1000, help="How many environments to test on")
-    parser.add_argument('-s', '--num-steps', type=int, default=10_000, help="Number of environment steps used to train the Eta model")
+    parser.add_argument('-t', '--test-size', type=int, default=100, help="How many environments to test on")
+    parser.add_argument('-s', '--num-steps', type=int, default=100_000, help="Number of environment steps used to train the Eta model")
     parser.add_argument('-ph', '--prediction-horizon', type=int, default=20, help="Number of timesteps the Eta model should predict into the future")
     parser.add_argument('-es', '--eta-skip', type=int, default=1, help="Number of environment steps between each Eta prediction")
     parser.add_argument('-k', '--num-knots', type=int, default=10, help="Number of knot points along spline that are specified by learned model")
+    parser.add_argument('-r', '--random-size', type=float, default=2.0, help="Size parameter that is proportional to the randomness when generating splines")
+    parser.add_argument('-st', '--spline-type', type=int, default=0, help="Which spline to use for trajectory tracking")
     parser.add_argument('--test-controller', action='store_true', help="Whether to test the controller instead")
     args = parser.parse_args()
     

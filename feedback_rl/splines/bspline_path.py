@@ -4,11 +4,12 @@ import numpy as np
 from feedback_rl.splines.spline import Spline
 
 class BSpline(Spline):
+
+    num_segment_params = 3
     
     def __init__(self, num_knots):
         super().__init__(num_knots)
         self.num_knots = num_knots
-        self.T = T
 
         # self.dt = T / (self.shape[1] - 1)
         #array of times to evaluate the paths at
@@ -19,7 +20,7 @@ class BSpline(Spline):
     def build_spline(self, times, points):
         super().build_spline(times, points)
         #build BSpline representation of x path wrt to time 
-        self._params = interpolate.splrep([0] + list(times), [0] + list(points))
+        self._params = interpolate.splrep(times, points)
 
     def random_spline(self, times, limit):
         super().random_spline(times, limit)
@@ -40,8 +41,8 @@ class BSpline(Spline):
         return interpolate.splev(t, self._params, der=order)
 
 if __name__ == '__main__':
-    num_knots = 10
-    times = np.arange(1, num_knots + 1)
+    num_knots = 11
+    times = np.arange(0, num_knots)
     data = times * np.sin(times)
     s = BSpline(num_knots)
     s.build_spline(times, data)
