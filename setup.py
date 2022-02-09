@@ -11,6 +11,8 @@ setup(name='feedback_rl',
           'numpy',
           'matplotlib',
           'torch',
-          'gym'
+          'gym',
+          'gym-cartpole-swingup',
+          'scipy'
       ]
 )
