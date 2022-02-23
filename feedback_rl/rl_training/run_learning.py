@@ -37,6 +37,9 @@ def run_learning(params):
     tensorboard_log = os.path.join(path, "tensorboard_log")
     os.makedirs(tensorboard_log, mode=0o775)
 
+    with open(os.path.join(path, "params.json"), 'w') as f:
+        json.dump(vars(params), f, indent=2)
+
     #-----------Train the model on the environment---------
 
     if params.eta_model == "default":
@@ -78,9 +81,6 @@ def run_learning(params):
 
     # Execute learning   
     model.learn(total_timesteps=params.timesteps, callback=callbacks)
-
-    with open(os.path.join(path, "params.json"), 'w') as f:
-        json.dump(vars(params), f, indent=2)
 
 if __name__=="__main__":
     # TODO turn this into an argument parser
