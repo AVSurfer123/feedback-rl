@@ -29,9 +29,7 @@ def run_learning(params):
 
     #------------Setup Folders and log file------------------------------
 
-    current_time = datetime.datetime.now()
-    folder_name = current_time.strftime("%m_%d_%Y_%H_%M_%S") + "_offline_rl"
-    path = os.path.join(BASE_PATH, folder_name)
+    path = os.path.join(BASE_PATH, params.folder_name)
 
     models_path = os.path.join(path, "models")
     os.makedirs(models_path, mode=0o775)
@@ -82,19 +80,23 @@ def run_learning(params):
     model.learn(total_timesteps=params.timesteps, callback=callbacks)
 
     with open(os.path.join(path, "params.json"), 'w') as f:
-        json.dump(params.toDict(), f, indent=2)
+        json.dump(vars(params), f, indent=2)
 
 if __name__=="__main__":
     # TODO turn this into an argument parser
-    params = DotMap()
-    params.eta_model = "02_23_2022_11_57_19_eta_model" #path to eta model to plug into 
-    params.timesteps = 20000
-    params.eval_freq = 1000
-    params.save_freq = 10000
-    params.gamma = 0.98
-    params.learning_rate = 0.0003
-    params.policy_kwargs = dict(activation_fn=th.nn.Tanh)
 
+    current_time = datetime.datetime.now()
+    folder_name = current_time.strftime("%m_%d_%Y_%H_%M_%S_offline_rl")
 
-    run_learning(params)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--folder-name', '-f', type=str, default=folder_name, help='Name of folder. Default: current_time')  
+    parser.add_argument('--eta-model', '-m', type=str, default="default", help='Path to eta_model to use in env. Default: Use built in env')
+    parser.add_argument('--timesteps', '-t', type=int, default=20000, help='Num timesteps to train on.  Default: 20000')
+    parser.add_argument('--eval-freq', '-e', type=int, default=1000, help='Evaluation Frequency  Default: 1000')
+    parser.add_argument('--save-freq', '-s', type=int, default=10000, help='Model Save Frequency  Default: 10000')
+    parser.add_argument('--gamma', '-g', type=float, default=0.98, help='Discount factor Default: 0.99')
+    parser.add_argument('--learning-rate', '-l', type=float, default=0.0003, help='Learning Rate Default: 0.0003')
+    args = parser.parse_args()
+
+    run_learning(args)
 

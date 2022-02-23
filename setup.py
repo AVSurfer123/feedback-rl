@@ -14,6 +14,5 @@ setup(name='feedback_rl',
           'gym',
           'gym-cartpole-swingup',
           'scipy',
-          'dill'
       ]
 )
