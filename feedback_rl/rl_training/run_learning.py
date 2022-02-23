@@ -8,10 +8,10 @@ Configure the model and environment parameters in params.py and then use this to
 
 import os
 import gym
+import json
 import numpy as np
 import torch as th
 import datetime
-import dill as pickle # so that we can pickle lambda functions
 import gym
 import gym_cartpole_swingup
 
@@ -21,6 +21,8 @@ from stable_baselines3 import SAC
 from stable_baselines3.sac import MlpPolicy
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 
+from feedback_rl.envs import OfflineEtaEnv
+
 BASE_PATH = os.path.join(os.path.dirname(__file__), "../../runs")
 
 def run_learning(params):
@@ -28,16 +30,14 @@ def run_learning(params):
     #------------Setup Folders and log file------------------------------
 
     current_time = datetime.datetime.now()
-    folder_name = current_time.strftime("%m_%d_%Y_%H%M%S") + "_"
-
+    folder_name = current_time.strftime("%m_%d_%Y_%H_%M_%S") + "_offline_rl"
     path = os.path.join(BASE_PATH, folder_name)
-    os.mkdir(path)
 
     models_path = os.path.join(path, "models")
-    os.mkdir(models_path)
+    os.makedirs(models_path, mode=0o775)
 
     tensorboard_log = os.path.join(path, "tensorboard_log")
-    os.mkdir(tensorboard_log)
+    os.makedirs(tensorboard_log, mode=0o775)
 
     #-----------Train the model on the environment---------
 
@@ -45,8 +45,8 @@ def run_learning(params):
         env = gym.make("CartPoleSwingUp-v0")
         eval_env = gym.make("CartPoleSwingUp-v0")
     else:
-        env = Cartpole_env(params.eta_model)
-        eval_env = Cartpole_env(params.eta_model)
+        env = OfflineEtaEnv(params.eta_model)
+        eval_env = OfflineEtaEnv(params.eta_model)
 
     #create callback function to occasionally evaluate the performance
     #of the agent throughout training
@@ -63,7 +63,7 @@ def run_learning(params):
                                         name_prefix='rl_model')
 
     #create list of callbacks that will be chain-called by the learning algorithm
-    callback = [eval_callback, save_callback]
+    callbacks = [eval_callback, save_callback]
 
     # Make Model
     #command to run tensorboard from command prompt
@@ -79,15 +79,15 @@ def run_learning(params):
                 )
 
     # Execute learning   
-    model.learn(total_timesteps=params.timesteps, callback=callback)
+    model.learn(total_timesteps=params.timesteps, callback=callbacks)
 
-    with open(os.path.join(path, "params.pkl"), 'wb') as pick:
-        pickle.dump(params, pick, pickle.HIGHEST_PROTOCOL)
+    with open(os.path.join(path, "params.json"), 'w') as f:
+        json.dump(params.toDict(), f, indent=2)
 
 if __name__=="__main__":
     # TODO turn this into an argument parser
     params = DotMap()
-    params.eta_model = "default" #path to eta model to plug into 
+    params.eta_model = "02_23_2022_11_57_19_eta_model" #path to eta model to plug into 
     params.timesteps = 20000
     params.eval_freq = 1000
     params.save_freq = 10000

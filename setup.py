@@ -13,6 +13,7 @@ setup(name='feedback_rl',
           'torch',
           'gym',
           'gym-cartpole-swingup',
-          'scipy'
+          'scipy',
+          'dill'
       ]
 )

@@ -2,6 +2,8 @@
 *.png
 *.jpg
 *.jpeg
+*.zip
+*.txt
 runs/
 
 # Byte-compiled / optimized / DLL files

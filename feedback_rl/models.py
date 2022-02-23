@@ -1,9 +1,14 @@
+import os
+import json
+
+from dotmap import DotMap
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 import numpy as np
 
+from feedback_rl.splines import SPLINE_MAP
 
 class EtaData(Dataset):
     def __init__(self, data, skip=1):
@@ -43,3 +48,14 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+    @staticmethod
+    def from_file(model_name):
+        model_dir = os.path.join(os.path.dirname(__file__), '../runs', model_name)
+        args_path = os.path.join(model_dir, 'args.json')
+        with open(args_path, 'r') as f:
+            args = DotMap(json.load(f))
+        model_path = os.path.join(model_dir, 'model.pt')
+        state_dict = torch.load(model_path)
+        model = MLP(5 + SPLINE_MAP[args.spline_type].num_segment_params, 3 * args.prediction_horizon // args.eta_skip, [32, 32])
+        model.load_state_dict(state_dict)
+        return model, args

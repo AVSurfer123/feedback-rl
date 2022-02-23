@@ -7,6 +7,13 @@ import matplotlib.pyplot as plt
 class Spline(ABC):
 
     def __init__(self, num_knots):
+        """
+        Constructs the spline with a predefined number of knot points.
+        There will be 1 less segment than the number of knot points.
+
+        Args:
+            num_knots: number of knot points, i.e. number of points that change their spline segment
+        """
         self.num_knots = num_knots
         self.T = None
         self._params = None
@@ -27,7 +34,8 @@ class Spline(ABC):
     
     @abstractmethod
     def random_spline(self, times, limit):
-        """Generates random spline parameters in self._params.
+        """
+        Generates random spline parameters in self._params.
         
         Returns:
             values at the knot points        
@@ -38,11 +46,22 @@ class Spline(ABC):
 
     @abstractmethod
     def deriv(self, t, order):
+        """
+        Gets the derivatives of the spline with respect to time.
+        
+        Args:
+            t: time to evaluate the derivative at
+            order: order of the derivative. 0 corresponds to standard function evaluation
+
+        Returns:
+            the derivative or function value
+        """
         if t < 0 or t > self.T:
             raise ValueError(f"Provided time {t} is out of bounds for the spline: [0, {self.T}]")
 
     @abstractproperty
     def num_segment_params(self):
+        """Number of spline params per segment of the spline."""
         return 0
 
     def eval_spline(self, times, order=0):
@@ -54,7 +73,10 @@ class Spline(ABC):
         Plots the spline at its order'th derivative (0 is the original curve).
 
         Args:
-            TODO
+            ax: matplotlib.pyplot.Axis to use. If None, uses the gca()
+            show: whether to show the plot
+            order: what derivative of the spline to plot. Default is 0 which is just the function
+            end_time: last time to plot the spline to
 
         Returns:
             matplotlib.pyplot.Axis used for plotting
@@ -70,7 +92,6 @@ class Spline(ABC):
             if order == 0:
                 sim_dt = self._t[1] - self._t[0]
                 num_points = int(end_time / sim_dt) + 1
-                print(num_points)
                 ax.plot(self._t[:num_points], self._x[:num_points], 'ro', label='$x$ knot points')
             ax.plot(times, data, label=f"$x$ {'' if order == 0 else f'derivative order {order}'}")
             ax.legend()
@@ -82,10 +103,16 @@ class Spline(ABC):
         return ax
 
     def x(self, t):
+        """Spline value at time `t`."""
         return self.deriv(t, 0)
 
     @property
     def params(self):
+        """Spline parameters"""
         return self._params
+
+    @params.setter
+    def params(self, params):
+        self._params = params
 
     

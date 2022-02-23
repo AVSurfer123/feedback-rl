@@ -1,7 +1,10 @@
-"""Trains RL through feedback linearization."""
+"""Trains an eta dynamics model through feedback linearization."""
 
 import argparse
 import time
+import datetime
+import os
+import json
 
 import torch
 import torch.nn as nn
@@ -15,8 +18,10 @@ import gym_cartpole_swingup
 
 from feedback_rl.models import MLP, EtaData
 from feedback_rl.splines import SPLINE_MAP
+from feedback_rl.utils import traj_to_input, obs_to_input
 
 DEBUG = False
+BASE_PATH = os.path.join(os.path.dirname(__file__), "../runs")
 
 FPS = 60
 g = 9.81 # [m/s^2]
@@ -84,8 +89,8 @@ def collect_data(args):
         for num in range(spline_num + 1):
             traj_act = np.array(data[run][num])
             data[run][num] = (traj_act, np.array([traj_des.params[num]]), xi_initial)
-            eval_times = np.arange(args.prediction_horizon * num, args.prediction_horizon * (num + 1) + 1) * sim_dt
             if DEBUG:
+                eval_times = np.arange(args.prediction_horizon * num, args.prediction_horizon * (num + 1) + 1) * sim_dt
                 plt.plot(eval_times, traj_act[:, 0] - xi_initial[0], label='x actual')
         
         run += 1
@@ -97,17 +102,6 @@ def collect_data(args):
             plt.show()
 
     return data
-
-def get_packaged_input(traj, params, xi_initial):
-    if traj.dim() == 2:
-        traj = traj.unsqueeze(0)
-    if params.dim() == 1:
-        params = params.unsqueeze(0)
-    if xi_initial.dim() == 1:
-        xi_initial = xi_initial.unsqueeze(0)
-    traj[:, :, :2] -= xi_initial.view(traj.shape[0], 1, -1)
-    net_input = torch.cat((traj[:, 0], params), axis=1).float().cuda()
-    return net_input
 
 def train_model(args, train_loader, eval_loader):
     eta_dynamics = MLP(5 + SPLINE_MAP[args.spline_type].num_segment_params, 3 * args.prediction_horizon // args.eta_skip, [32, 32]).cuda()
@@ -121,7 +115,8 @@ def train_model(args, train_loader, eval_loader):
         total_loss = 0
         count = 0
         for traj, params, xi_initial in train_loader:
-            net_input = get_packaged_input(traj, params, xi_initial)
+            net_input = traj_to_input(traj, params, xi_initial)
+            # Targets are eta variables after 1st timestep
             target = traj[:, 1:, 2:].cuda()
             target = target.reshape(target.shape[0], -1)
 
@@ -150,7 +145,8 @@ def eval_loss(model, eval_loader):
     total_loss = 0
     count = 0
     for traj, params, xi_initial in eval_loader:
-        net_input = get_packaged_input(traj, params, xi_initial)
+        net_input = traj_to_input(traj, params, xi_initial)
+        # Targets are eta variables after 1st timestep
         target = traj[:, 1:, 2:].cuda()
         target = target.reshape(target.shape[0], -1)
 
@@ -166,7 +162,7 @@ def test_model(args, eta_model):
     done = False
     losses = []
 
-    for i in range(args.test_size):
+    for _ in range(args.test_size):
         obs = env.reset()
         old_obs = obs
         done = False
@@ -177,27 +173,26 @@ def test_model(args, eta_model):
         xi_initial = np.array([env.state.x_pos, env.state.x_dot])
         eta_traj = []
         for j in range(max_steps):
-
             action = feedback_controller(env, j * sim_dt, traj_des, xi_initial)
             obs, rew, done, info = env.step(action)
-
             eta_traj.append(obs[2:])
 
-            if j % args.prediction_horizon == 0:
-                if j != 0:
-                    eta_loss = F.mse_loss(torch.tensor(eta_traj), target.cpu())
-                    losses.append(eta_loss)
+            if (j + 1) % args.prediction_horizon == 0:
+                net_input = obs_to_input(old_obs, [traj_des.params[(j // args.prediction_horizon) - 1]], xi_initial).cuda()
+                target = eta_model(net_input).reshape(args.prediction_horizon, -1).cpu()
+                eta_loss = F.mse_loss(torch.tensor(eta_traj), target)
+                losses.append(eta_loss)
+                old_obs = obs
                 eta_traj = []
-                net_input = get_packaged_input(torch.tensor([old_obs]), torch.tensor([traj_des.params[j // args.prediction_horizon]]), torch.tensor(xi_initial))
-                target = eta_model(net_input).reshape(args.prediction_horizon, -1)
-            
-            old_obs = obs
+
             if done:
                 break
         
-    print(len(losses))
     return losses
 
+################################
+##### Entrypoint functions #####
+################################
 
 def main(args):
     start=  time.time()
@@ -238,6 +233,17 @@ def main(args):
     test_losses = test_model(args, model)
     print(f"Average test loss from {args.test_size} episodes: {sum(test_losses) / len(test_losses)}")
 
+    if args.save:
+        current_time = datetime.datetime.now()
+        folder_name = current_time.strftime("%m_%d_%Y_%H_%M_%S") + "_eta_model"
+        folder_name = os.path.join(BASE_PATH, folder_name)
+        os.makedirs(folder_name, mode=0o775)
+        model_path = os.path.join(folder_name, 'model.pt')
+        torch.save(model.state_dict(), model_path)
+        args_path = os.path.join(folder_name, 'args.json')
+        with open(args_path, 'w') as f:
+            json.dump(vars(args), f, indent=2)
+
 
 def test_controller():
     env = gym.make("CartPoleSwingUp-v0")
@@ -245,7 +251,7 @@ def test_controller():
     num_knots = 11
     traj_des = SPLINE_MAP[args.spline_type](num_knots)
     times = np.linspace(0, max_steps, num_knots) * sim_dt
-    knots = np.sin(times)
+    knots = times * np.sin(times) / 4
     traj_des.build_spline(times, knots)
     data = [obs]
     xi_initial = np.array([env.state.x_pos, env.state.x_dot])
@@ -309,11 +315,21 @@ if __name__ == '__main__':
     parser.add_argument('-k', '--num-knots', type=int, default=10, help="Number of knot points along spline that are specified by learned model")
     parser.add_argument('-r', '--random-size', type=float, default=2.0, help="Size parameter that is proportional to the randomness when generating splines")
     parser.add_argument('-st', '--spline-type', type=int, default=0, help="Which spline to use for trajectory tracking")
+    parser.add_argument('--save', action='store_true', help="Whether to save the trained model")
+    parser.add_argument('--load', type=str, help="Model path to load for getting test loss")
     parser.add_argument('--test-controller', action='store_true', help="Whether to test the controller instead")
+    parser.add_argument('--teleop', action='store_true', help="Keyboard control of environment")
     args = parser.parse_args()
     
     if args.test_controller:
         test_controller()
-        exit()
-
-    main(args)
+    elif args.teleop:
+        teleop()
+    elif args.load:
+        test_size = args.test_size
+        model, args = MLP.from_file(args.load)
+        args.test_size = test_size
+        test_losses = test_model(args, model.cuda())
+        print(f"Average test loss from {args.test_size} episodes: {sum(test_losses) / len(test_losses)}")
+    else:
+        main(args)
