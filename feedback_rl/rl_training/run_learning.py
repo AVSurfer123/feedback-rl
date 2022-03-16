@@ -6,6 +6,7 @@ This is the file that will train the model on the passed in parameters
 Configure the model and environment parameters in params.py and then use this to run
 """
 
+import argparse
 import os
 import gym
 import json
@@ -66,6 +67,8 @@ def run_learning(params):
     #create list of callbacks that will be chain-called by the learning algorithm
     callbacks = [eval_callback, save_callback]
 
+    policy_kwargs = {}
+
     # Make Model
     #command to run tensorboard from command prompt
     model = SAC(MlpPolicy,
@@ -73,7 +76,7 @@ def run_learning(params):
                 gamma = params.gamma,
                 learning_rate = params.learning_rate,
                 use_sde = True,
-                policy_kwargs=params.policy_kwargs,
+                policy_kwargs=policy_kwargs,
                 verbose = 1,
                 device="cuda",
                 tensorboard_log = tensorboard_log
