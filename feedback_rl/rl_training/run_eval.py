@@ -44,8 +44,7 @@ def evaluate(folder_name, model_name="best_model", render=False, iterations=10):
 
         spline = ConstAccelSpline(num_knots=2)
         end_time = eta_args.prediction_horizon * env.params.deltat
-        spline.random_spline([0, end_time], 1)
-        spline.params = [action[0]]
+        spline.set_spline([0, end_time], [action[0]])
 
         xi_initial = np.array([env.state.x_pos, env.state.x_dot])
 

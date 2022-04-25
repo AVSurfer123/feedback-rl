@@ -30,9 +30,9 @@ class ConstAccelSpline(Spline):
             prev_x = x
         self._params = np.array(self._params) 
 
-    def random_spline(self, times, limit):
-        super().random_spline(times, limit)
-        self._params = np.random.uniform(low=-limit, high=limit, size=self.num_knots - 1)
+    def set_spline(self, times, params):
+        super().set_spline(times, params)
+        assert len(params) == self.num_knots - 1
         prev_x = 0
         prev_t = times[0]
         init_vel = self.init_vel
@@ -48,6 +48,11 @@ class ConstAccelSpline(Spline):
             prev_x = x
         
         return self._x
+
+    def random_spline(self, times, limit):
+        super().random_spline(times, limit)
+        params = np.random.uniform(low=-limit, high=limit, size=self.num_knots - 1)
+        return self.set_spline(times, params)
 
     def deriv(self, t, order):
         super().deriv(t, order)

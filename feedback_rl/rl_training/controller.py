@@ -1,6 +1,8 @@
 import time
 import datetime
 import itertools
+import os
+from dotmap import DotMap
 from run_learning import run_learning
 
 params = DotMap()

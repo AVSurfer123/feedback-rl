@@ -9,10 +9,10 @@ class Spline(ABC):
     def __init__(self, num_knots):
         """
         Constructs the spline with a predefined number of knot points.
-        There will be 1 less segment than the number of knot points.
+        There will be 1 less spline segment than the number of knot points.
 
         Args:
-            num_knots: number of knot points, i.e. number of points that change their spline segment
+            num_knots: number of knot points
         """
         self.num_knots = num_knots
         self.T = None
@@ -31,7 +31,20 @@ class Spline(ABC):
         self._t = times
         assert len(points) == self.num_knots
         self._x = points
-    
+
+    @abstractmethod
+    def set_spline(self, times, params):
+        """
+        Sets the spline parameters and times of the knot points.
+
+        Returns:
+            values at the knot points  
+        """
+        assert len(times) == self.num_knots
+        self.T = max(times)
+        self._t = times
+        self._params = params
+
     @abstractmethod
     def random_spline(self, times, limit):
         """
@@ -40,9 +53,6 @@ class Spline(ABC):
         Returns:
             values at the knot points        
         """
-        assert len(times) == self.num_knots
-        self.T = max(times)
-        self._t = times
 
     @abstractmethod
     def deriv(self, t, order):

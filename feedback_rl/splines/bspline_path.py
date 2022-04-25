@@ -22,6 +22,12 @@ class BSpline(Spline):
         #build BSpline representation of x path wrt to time 
         self._params = interpolate.splrep(times, points)
 
+    def set_spline(self, times, params):
+        super().set_spline(times, params)
+        assert len(params) == 3
+        self._x = self.eval_spline(times)
+        return self._x
+
     def random_spline(self, times, limit):
         super().random_spline(times, limit)
         k = 3
@@ -31,10 +37,8 @@ class BSpline(Spline):
         t[-idx-1] = self.T
         c = np.random.uniform(-limit, limit, size=self.num_knots)
         c[0] = 0
-        self._params = (t, c, k)
-        self._x = self.eval_spline(times)
-        print(self._x)
-        return c
+        params = (t, c, k)
+        return self.set_spline(times, params)
 
     def deriv(self, t, order):
         super().deriv(t, order)
@@ -50,8 +54,8 @@ if __name__ == '__main__':
     s.plot(ax, order=1)
     s.plot(ax, order=2, show=True)
     
-    c = s.random_spline(times, 3.0)
-    print(c)
+    x = s.random_spline(times, 3.0)
+    print(x)
     ax = s.plot()
     s.plot(ax, order=1)
     s.plot(ax, order=2, show=True)
