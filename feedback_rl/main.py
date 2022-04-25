@@ -30,7 +30,6 @@ pole_inertia_coefficient = 1
 max_steps = 500 # Defined in gym_cartpole_swingup/__init__.py
 
 def feedback_controller(env, t, traj, xi_initial):
-    v = 0
     M = env.params.cart.mass
     m = env.params.pole.mass
     l = env.params.pole.length
